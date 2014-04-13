@@ -29,12 +29,15 @@
 #include "hw_interface.h"
 #include KEYBOARD_MODEL
 
+// Attention key to enter "magic mode".
+#define MAGIC_KEY  KC_RGUI
 
 struct {uint8_t type; uint8_t value;} layout[] = KEYBOARD_LAYOUT;
 struct {uint8_t pressed; uint8_t bounce;} key[NKEY];
 
-uint8_t queue[7] = {255,255,255,255,255,255,255};
+uint8_t queue[7] = {0,0,0,0,0,0,0};
 uint8_t mod_keys = 0;
+uint8_t magic_mode = 0;
 
 void init(void);
 void send(void);
@@ -59,7 +62,13 @@ ISR(SCAN_INTERRUPT_FUNCTION) {
   release_rows();
   // if(mod_keys == (uint8_t)(KC_LSFT | KC_RSFT))
   //   jump_bootloader();
-  update_leds(keyboard_leds);
+
+  // lights on in magic mode
+  if (magic_mode) {
+    update_leds(6);
+  } else {
+    update_leds(keyboard_leds);
+  }
 #ifdef DEBUG
   debug_print();
 #endif  
@@ -75,37 +84,83 @@ int main(void) {
 void send(void) {
   uint8_t i;
   for(i = 0; i < 6; i++)
-    keyboard_keys[i] = queue[i]<255? layout[queue[i]].value: 0;
+    keyboard_keys[i] = queue[i];
   keyboard_modifier_keys = mod_keys;
   usb_keyboard_send();
 }
 
-void key_press(uint8_t k) {
+// Low-level key press.
+void ll_key_press(uint8_t k) {
   uint8_t i;
-  key[k].pressed = true;
-  if(IS_MODIFIER(layout[k]))
-    mod_keys |= layout[k].value;
-  else {
-    for(i = 5; i > 0; i--) 
-      queue[i] = queue[i-1];
-    queue[0] = k;
-  }
+  for(i = 5; i > 0; i--) 
+    queue[i] = queue[i-1];
+  queue[0] = k;
   send();
 }
 
-void key_release(uint8_t k) {
-  uint8_t i;
-  key[k].pressed = false;
-  if(IS_MODIFIER(layout[k]))
-    mod_keys &= ~layout[k].value;
-  else {
-    for(i = 0; i < 6; i++) 
-      if(queue[i]==k)
-        break;
-    for(i = i; i < 6; i++)
-      queue[i] = queue[i+1];
-  }
+void ll_modifier_press(uint8_t mod) {
+  mod_keys |= mod;
   send();
+}
+
+// Low-level key release.
+void ll_key_release(uint8_t k) {
+  uint8_t i;
+  for(i = 0; i < 6; i++) 
+    if(queue[i]==k)
+      break;
+  for(; i < 6; i++)
+    queue[i] = queue[i+1];
+  send();
+}
+
+void ll_modifier_release(uint8_t mod) {
+  mod_keys &= ~mod;
+  send();
+}
+
+uint8_t is_magic_key(uint8_t k) {
+  struct {uint8_t type; uint8_t value;} magic = MAGIC_KEY;
+  return layout[k].type == magic.type
+      && layout[k].value == magic.value;
+}
+
+// Hook function invoked for key presses when we are in
+// magic mode.
+void magic_key_press(uint8_t k) {
+  if (is_magic_key(k)) {
+    magic_mode = 0;
+  }
+  if (layout[k].value == KEY_X) {
+    ll_key_press(KEY_X);
+    ll_key_release(KEY_X);
+    ll_key_press(KEY_X);
+    ll_key_release(KEY_X);
+  }
+}
+
+void key_press(uint8_t k) {
+  key[k].pressed = true;
+  if (magic_mode) {
+    magic_key_press(k);
+  } else if (is_magic_key(k)) {
+    magic_mode = 1;
+  } else if(IS_MODIFIER(layout[k])) {
+    ll_modifier_press(layout[k].value);
+  } else {
+    ll_key_press(layout[k].value);
+  }
+}
+
+void key_release(uint8_t k) {
+  key[k].pressed = false;
+  if (magic_mode) {
+    // magic_key_release?
+  } else if(IS_MODIFIER(layout[k])) {
+    ll_modifier_release(layout[k].value);
+  } else {
+    ll_key_release(layout[k].value);
+  }
 }
 
 void init(void) {
