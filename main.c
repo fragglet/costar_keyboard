@@ -35,9 +35,12 @@
 struct {uint8_t type; uint8_t value;} layout[] = KEYBOARD_LAYOUT;
 struct {uint8_t pressed; uint8_t bounce;} key[NKEY];
 
+uint8_t replay_buf[255];
+uint8_t replay_buf_len = 0;
 uint8_t queue[7] = {0,0,0,0,0,0,0};
 uint8_t mod_keys = 0;
 uint8_t magic_mode = 0;
+uint8_t recording_mode = 0;
 
 void init(void);
 void send(void);
@@ -63,9 +66,11 @@ ISR(SCAN_INTERRUPT_FUNCTION) {
   // if(mod_keys == (uint8_t)(KC_LSFT | KC_RSFT))
   //   jump_bootloader();
 
-  // lights on in magic mode
+  // lights on in magic mode or recording mode
   if (magic_mode) {
     update_leds(6);
+  } else if (recording_mode) {
+    update_leds(4);
   } else {
     update_leds(keyboard_leds);
   }
@@ -125,6 +130,23 @@ uint8_t is_magic_key(uint8_t k) {
       && layout[k].value == magic.value;
 }
 
+void replay_keypresses(void)
+{
+  uint8_t i, k;
+
+  // Go through all keys in the replay buf. We can determine whether
+  // a command is a key press or release based on whether the key
+  // is already pressed.
+  for (i = 0; i < replay_buf_len; ++i) {
+    k = replay_buf[i];
+    if (!key[k].pressed) {
+      key_press(k);
+    } else {
+      key_release(k);
+    }
+  }
+}
+
 // Hook function invoked for key presses when we are in
 // magic mode.
 void magic_key_press(uint8_t k) {
@@ -137,6 +159,31 @@ void magic_key_press(uint8_t k) {
     ll_key_press(KEY_X);
     ll_key_release(KEY_X);
   }
+  // Start recording keypresses?
+  if (layout[k].value == KEY_Q) {
+    recording_mode = 1;
+    replay_buf_len = 0;
+    magic_mode = 0;
+  }
+  // Replay recorded keypresses:
+  if (layout[k].value == KEY_R) {
+    magic_mode = 0;
+    replay_keypresses();
+  }
+  // Activate bootloader:
+  if (layout[k].value == KEY_B) {
+    jump_bootloader();
+  }
+}
+
+void add_to_replay_buf(uint8_t k)
+{
+  if (replay_buf_len + 1 < sizeof(replay_buf)) {
+    replay_buf[replay_buf_len] = k;
+    ++replay_buf_len;
+  } else {
+    recording_mode = 0;
+  }
 }
 
 void key_press(uint8_t k) {
@@ -144,11 +191,23 @@ void key_press(uint8_t k) {
   if (magic_mode) {
     magic_key_press(k);
   } else if (is_magic_key(k)) {
-    magic_mode = 1;
-  } else if(IS_MODIFIER(layout[k])) {
-    ll_modifier_press(layout[k].value);
+    // Pressing the magic key activates magic mode, except
+    // if we're in recording mode, in which case it exits
+    // recording mode.
+    if (recording_mode) {
+      recording_mode = 0;
+    } else {
+      magic_mode = 1;
+    }
   } else {
-    ll_key_press(layout[k].value);
+    if (recording_mode) {
+      add_to_replay_buf(k);
+    }
+    if(IS_MODIFIER(layout[k])) {
+      ll_modifier_press(layout[k].value);
+    } else {
+      ll_key_press(layout[k].value);
+    }
   }
 }
 
@@ -156,10 +215,15 @@ void key_release(uint8_t k) {
   key[k].pressed = false;
   if (magic_mode) {
     // magic_key_release?
-  } else if(IS_MODIFIER(layout[k])) {
-    ll_modifier_release(layout[k].value);
   } else {
-    ll_key_release(layout[k].value);
+    if (recording_mode) {
+      add_to_replay_buf(k);
+    }
+    if(IS_MODIFIER(layout[k])) {
+      ll_modifier_release(layout[k].value);
+    } else {
+      ll_key_release(layout[k].value);
+    }
   }
 }
 
