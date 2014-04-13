@@ -130,9 +130,29 @@ uint8_t is_magic_key(uint8_t k) {
       && layout[k].value == magic.value;
 }
 
+// Reset all key states, used before recording and replay.
+void clear_pressed(void)
+{
+  uint8_t i;
+
+  // Set all keys to unpressed, clear USB queue and modifiers.
+  for (i = 0; i < NKEY; ++i) {
+    key[i].pressed = 0;
+  }
+  for (i = 0; i < 7; ++i) {
+    queue[i] = 0;
+  }
+  mod_keys = 0;
+
+  // Send as a USB command for good measure.
+  send();
+}
+
 void replay_keypresses(void)
 {
   uint8_t i, k;
+
+  clear_pressed();
 
   // Go through all keys in the replay buf. We can determine whether
   // a command is a key press or release based on whether the key
@@ -159,12 +179,6 @@ void magic_key_press(uint8_t k) {
     ll_key_press(KEY_X);
     ll_key_release(KEY_X);
   }
-  // Start recording keypresses?
-  if (layout[k].value == KEY_Q) {
-    recording_mode = 1;
-    replay_buf_len = 0;
-    magic_mode = 0;
-  }
   // Replay recorded keypresses:
   if (layout[k].value == KEY_R) {
     magic_mode = 0;
@@ -173,6 +187,19 @@ void magic_key_press(uint8_t k) {
   // Activate bootloader:
   if (layout[k].value == KEY_B) {
     jump_bootloader();
+  }
+}
+
+// Hook function invoked for key releases in magic mode.
+void magic_key_release(uint8_t k) {
+  // Start recording keypresses?
+  // We must start recording on key release, not press; otherwise
+  // the release of the "start recording" keypress will be recorded.
+  if (layout[k].value == KEY_Q) {
+    recording_mode = 1;
+    replay_buf_len = 0;
+    magic_mode = 0;
+    clear_pressed();
   }
 }
 
@@ -214,7 +241,7 @@ void key_press(uint8_t k) {
 void key_release(uint8_t k) {
   key[k].pressed = false;
   if (magic_mode) {
-    // magic_key_release?
+    magic_key_release(k);
   } else {
     if (recording_mode) {
       add_to_replay_buf(k);
